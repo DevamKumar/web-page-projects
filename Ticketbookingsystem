@@ -1,0 +1,200 @@
+/** @jsxImportSource https://esm.sh/react@18.2.0 */
+import { createRoot } from "https://esm.sh/react-dom@18.2.0/client";
+import React, { useEffect, useState } from "https://esm.sh/react@18.2.0";
+
+function App() {
+  const [seats, setSeats] = useState([]);
+  const [selectedSeat, setSelectedSeat] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [booking, setBooking] = useState(false);
+
+  useEffect(() => {
+    async function fetchSeats() {
+      try {
+        const response = await fetch("/seats");
+        if (!response.ok) throw new Error("Failed to fetch seats");
+        const data = await response.json();
+        setSeats(data);
+      } catch (error) {
+        alert("Error fetching seats. Please try again later.");
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchSeats();
+  }, []);
+
+  const bookSeat = async () => {
+    if (!selectedSeat || booking) return;
+
+    setBooking(true);
+
+    // Optimistic UI update
+    const updatedSeats = seats.map(seat => seat.number === selectedSeat ? { ...seat, booked: true } : seat);
+    setSeats(updatedSeats);
+
+    try {
+      const response = await fetch("/book", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seat: selectedSeat }),
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        alert(`Seat ${selectedSeat} booked successfully! 🎉`);
+        setSeats(result.updatedSeats);
+      } else {
+        alert(result.message || "Booking failed");
+        setSeats(seats); // Revert in case of failure
+      }
+    } catch (error) {
+      alert("Error processing booking. Please try again.");
+      setSeats(seats); // Revert seats if the request fails
+    } finally {
+      setSelectedSeat(null);
+      setBooking(false);
+    }
+  };
+
+  return (
+    <div style={{ fontFamily: "Arial", maxWidth: "600px", margin: "auto", padding: "20px" }}>
+      <h1>🎟️ Ticket Booking System</h1>
+      {loading
+        ? <p>Loading seats...</p>
+        : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: "10px" }}>
+            {seats.map(seat => (
+              <button
+                key={seat.number}
+                onClick={() => setSelectedSeat(seat.number)}
+                style={{
+                  backgroundColor: seat.booked ? "gray" : (selectedSeat === seat.number ? "green" : "lightblue"),
+                  color: "white",
+                  border: "none",
+                  padding: "10px",
+                  cursor: seat.booked ? "not-allowed" : "pointer",
+                }}
+                disabled={seat.booked}
+                aria-label={`Seat ${seat.number} ${seat.booked ? "booked" : "available"}`}
+              >
+                {seat.number}
+              </button>
+            ))}
+          </div>
+        )}
+      <button
+        onClick={bookSeat}
+        disabled={!selectedSeat || booking}
+        style={{
+          marginTop: "20px",
+          backgroundColor: selectedSeat ? "blue" : "gray",
+          color: "white",
+          padding: "10px 20px",
+          border: "none",
+          cursor: selectedSeat ? "pointer" : "not-allowed",
+        }}
+      >
+        {booking ? "Booking..." : "Book Selected Seat"}
+      </button>
+      <a
+        href={import.meta.url.replace("esm.town", "val.town")}
+        target="_top"
+        style={{ display: "block", marginTop: "20px", color: "gray", textDecoration: "none" }}
+      >
+        View Source
+      </a>
+    </div>
+  );
+}
+
+function client() {
+  createRoot(document.getElementById("root")).render(<App />);
+}
+if (typeof document !== "undefined") { client(); }
+
+export default async function server(request: Request): Promise<Response> {
+  const { sqlite } = await import("https://esm.town/v/stevekrouse/sqlite");
+  const KEY = new URL(import.meta.url).pathname.split("/").at(-1);
+
+  // Ensure table exists
+  await sqlite.execute(`
+    CREATE TABLE IF NOT EXISTS ${KEY}_seats (
+      number INTEGER PRIMARY KEY,
+      booked BOOLEAN DEFAULT 0
+    )
+  `);
+
+  // Initialize seats if not already done
+  const seatsCount = await sqlite.execute(`SELECT COUNT(*) as count FROM ${KEY}_seats`);
+  if (seatsCount.rows[0].count === 0) {
+    for (let i = 1; i <= 25; i++) {
+      await sqlite.execute(`INSERT INTO ${KEY}_seats (number, booked) VALUES (?, 0)`, [i]);
+    }
+  }
+
+  // Handle seat retrieval
+  if (request.method === "GET" && new URL(request.url).pathname === "/seats") {
+    const seats = await sqlite.execute(`SELECT * FROM ${KEY}_seats ORDER BY number`);
+    return new Response(JSON.stringify(seats.rows), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  // Handle seat booking
+  if (request.method === "POST" && new URL(request.url).pathname === "/book") {
+    const { seat } = await request.json();
+
+    // Check if seat is available
+    const checkSeat = await sqlite.execute(`SELECT * FROM ${KEY}_seats WHERE number = ? AND booked = 0`, [seat]);
+
+    if (checkSeat.rows.length > 0) {
+      // Book the seat
+      await sqlite.execute(`UPDATE ${KEY}_seats SET booked = 1 WHERE number = ?`, [seat]);
+
+      // Retrieve updated seats
+      const updatedSeats = await sqlite.execute(`SELECT * FROM ${KEY}_seats ORDER BY number`);
+
+      return new Response(
+        JSON.stringify({
+          success: true,
+          updatedSeats: updatedSeats.rows,
+        }),
+        {
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    } else {
+      return new Response(
+        JSON.stringify({
+          success: false,
+          message: "Seat already booked",
+        }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    }
+  }
+
+  // Serve HTML for main page
+  return new Response(
+    `
+    <html>
+      <head>
+        <title>Ticket Booking System</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+      </head>
+      <body>
+        <div id="root"></div>
+        <script src="https://esm.town/v/std/catch"></script>
+        <script type="module" src="${import.meta.url}"></script>
+      </body>
+    </html>
+  `,
+    {
+      headers: { "Content-Type": "text/html" },
+    },
+  );
+}
